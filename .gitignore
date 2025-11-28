@@ -1,0 +1,11 @@
+auto_venv/
+__pycache__/
+
+downloads_pdf/
+*.exe
+*.zip
+*.log
+.DS_Store
+
+build/
+dist/
