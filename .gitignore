@@ -9,3 +9,6 @@ downloads_pdf/
 
 build/
 dist/
+temp/
+output/
+Dados de Entrada/
