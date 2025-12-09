@@ -41,32 +41,28 @@ os.makedirs(PASTA_OUTPUT, exist_ok=True)
 
 # --- Funções do Script ---
 
-def ler_dados():
+def ler_dados(caminho_arquivo_input:str):
     # 1. Tenta encontrar arquivos
-    arquivos_excel = glob.glob(os.path.join(PASTA_ENTRADA, "*.xlsx"))
-    arquivos_csv = glob.glob(os.path.join(PASTA_ENTRADA, "*.csv"))
-    arquivos_pdf = glob.glob(os.path.join(PASTA_ENTRADA, "*.pdf"))
-    
+    if not os.path.exists(caminho_arquivo_input):
+        print(f"ERRO: Arquivo não encontrado no caminho: {caminho_arquivo_input}")
+        return [], None
+        
+    nome_arquivo = os.path.basename(caminho_arquivo_input)
+
     caminho_arquivo = None
-    if arquivos_excel:
-        caminho_arquivo = arquivos_excel[0]
+    if nome_arquivo.endswith('.xlsx'):
+        caminho_arquivo = caminho_arquivo_input
         tipo_arquivo = "xlsx"
         # Mapeamento Padrão para Excel
         mapa_colunas = {'EFISCO': 'efisco', 'VALOR': 'valor', 'DATA': 'data_base'}
-    elif arquivos_csv:
-        caminho_arquivo = arquivos_csv[0]
-        tipo_arquivo = "csv"
-        # Mapeamento Flexível para CSV
-        mapa_colunas = {'Código do Item': 'efisco', 'Preço Unitário': 'valor', 'Data/Hora da Compra': 'data_base'}
-    elif arquivos_pdf:
-        caminho_arquivo = arquivos_pdf[0]
+    elif nome_arquivo.endswith(".pdf"):
+        caminho_arquivo = caminho_arquivo_input
         nome_arquivo_usado = os.path.basename(caminho_arquivo)
         try:
             tabelas = camelot.io.read_pdf(
                 caminho_arquivo, 
                 pages='all', 
                 flavor='stream', # 'stream' é bom para tabelas com poucas linhas visíveis (como a sua)
-                # O parâmetro column_names pode ser necessário para forçar a identificação correta das colunas
             )
 
             if not tabelas:
@@ -74,7 +70,6 @@ def ler_dados():
             
             print(f"Encontradas {tabelas.n} tabelas. Combinando dados...")
             # 2. Combinar todas as tabelas em um único DataFrame
-            # No seu relatório, a tabela que lista os preços está dividida em várias páginas.
             df_lista = [t.df for t in tabelas if t.df.shape[1] > 5] # Filtra apenas tabelas com mais de 5 colunas (a principal)
 
 
@@ -98,9 +93,7 @@ def ler_dados():
                 df_temp = tabela.copy() # Obtém o DataFrame da tabela atual
 
                 if df_temp.shape[1] == 8:
-                    # Tabela da Página 1 (ou se o Camelot acertou) - Assumimos que está correta
-
-                    # Renomeamos as colunas para facilitar a concatenação e limpeza posterior
+                    # Tabela da Página 1 
                     df_temp.columns = ['N°', 'Inciso', 'Nome', 'Quantidade', 'Unidade', 'Preço unitário', 'Data', 'Compõe']
                     
                     df_temp[['Quantidade', 'Unidade']] = df_temp['Quantidade'].str.extract(r'(\d+)\s*(.*)') # inutil, tava viajando demais
@@ -118,14 +111,10 @@ def ler_dados():
                     print(f"   -> Reestruturando Tabela {i} (Colunas agrupadas)...")
                     
                     # 1. Definir os nomes das colunas atuais (7 colunas)
-                    # O agrupamento provavelmente ocorreu na 4ª coluna (índice 3)
                     df_temp.columns = ['N°', 'Inciso', 'Nome', 'Quant_Unid_Agrupada', 'Preço unitário', 'Data', 'Compõe']
                     
                     # 2. Aplicar o SPLIT e extrair os dados
-                    # Usamos uma expressão regular para capturar o número da quantidade (o primeiro valor)
-                    # e o restante (a unidade)
-                    
-                    # Cria duas novas colunas: 'Quantidade' (o número) e 'Unidade' (o restante)
+             
                     df_temp[['Quantidade', 'Unidade']] = df_temp['Quant_Unid_Agrupada'].str.extract(r'(\d+)\s*(.*)') # inutil, tava viajando demais
                     
                     # 3. Reordenar e Renomear para o formato de 8 colunas (igual ao da Tabela 1)
@@ -133,7 +122,6 @@ def ler_dados():
                     # Remove a coluna agrupada original
                     df_temp.drop(columns=['Quant_Unid_Agrupada'], inplace=True)
                     
-                    # A coluna 'Unidade' foi inserida no final. Vamos reordenar para o formato padrão:
                     df_temp = df_temp[['Preço unitário', 'Data']]
                     
                     for coluna in df_temp.columns:
@@ -192,19 +180,15 @@ def ler_dados():
             return []
     
     else:
-        print(f"ERRO CRÍTICO: Não encontrei nenhum arquivo .xlsx ou .csv na pasta '{PASTA_ENTRADA}'.")
+        print(f"ERRO CRÍTICO: Não encontrei nenhum arquivo .xlsx na pasta '{PASTA_ENTRADA}'.")
         return []
     
     nome_arquivo_usado = os.path.basename(caminho_arquivo)
     print(f"Lendo o primeiro arquivo encontrado ({tipo_arquivo}): {nome_arquivo_usado}")
 
     try:
-        # 2. Leitura com Pandas
-        if tipo_arquivo == "xlsx":
-            df = pd.read_excel(caminho_arquivo)
-        else: # csv
-            df = pd.read_csv(caminho_arquivo, encoding='latin-1', skiprows= 2, sep=';', usecols=["Código do Item", "Preço Unitário", "Data/Hora da Compra"])
-            print(df)
+        df = pd.read_excel(caminho_arquivo)
+        
         # 3. Normalização e Mapeamento de Colunas
         df.columns = df.columns.str.upper().str.strip()
         
@@ -249,7 +233,7 @@ def ler_dados():
                     'data_base': data_objeto
                 })
             except Exception as e:
-                print(f"Erro ao processar linha {index + 2}: {e}")
+                print(f"Erro ao processar: {e}")
                 
         return lista_itens
         
@@ -257,9 +241,9 @@ def ler_dados():
         print(f"Erro ao abrir/processar arquivo: {e}")
         return []
 
-def verificar_necessidade_atualizacao(dados):
+def verificar_necessidade_atualizacao(dados, periodo= 60):
     data_hoje = datetime.now().date()
-    limite_dias = timedelta(days=60) #mudei pra testar usando o pdf
+    limite_dias = timedelta(days=periodo) 
     itens_para_atualizar = []
     
     for item in dados:
@@ -343,7 +327,7 @@ def corrigir_valor_ipca_selenium(item, item_id, mostrar_browser=True):
             if data_final_str_mes == data_origem_str_mes:
                 print(f"   -> AVISO: A data final do codigo {item["efisco"]} atingiu o mesmo mês da data base. Não é possível atualizar.")
                 break
-            
+
             campo_data = driver.find_element(By.NAME, 'dataFinal')
             campo_data.clear()
             campo_data.send_keys(data_final_str)
@@ -444,43 +428,3 @@ def concatena_pdf(catmat: str, todos_dados: list):
     
     print(f"   -> SUCESSO: Arquivo final salvo em: {caminho_saida}")
     return True
-
-
-# --- Bloco Principal de Execução ---
-if __name__ == "__main__":
-    print("--- INICIANDO AUTOMACAO IPCA ---")
-    print(f"Diretório base: {BASE_DIR}")
-    
-    dados_completos = ler_dados()
-    
-    if dados_completos:
-        # eu fiz usando a logica de que um codigo ja identifica unicamente
-        itens_a_corrigir, dados_completos = verificar_necessidade_atualizacao(dados_completos)
-        
-        if itens_a_corrigir:
-            print(f"\nEncontrados {len(itens_a_corrigir)} itens para atualizar.")
-            
-            for i, item in enumerate(dados_completos):
-                item_id = i+1
-                if item['status'] == 'Atualizar':
-                    corrigir_valor_ipca_selenium(item, item_id)
-            
-            print("\n--- PROCESSO FINALIZADO COM SUCESSO ---")
-        else:
-            print("\nNenhum item precisou de atualização (todos < 180 dias).")
-        
-        codigos_efisco_unicos = set(item['efisco'] for item in dados_completos)
-        
-        print(f"\n--- INICIANDO CONCATENAÇÃO DE PDFs para {len(codigos_efisco_unicos)} códigos ---")
-        
-        # Iterar sobre CADA código EFISCO e chamar a função
-        for codigo in codigos_efisco_unicos:
-            concatena_pdf(codigo, dados_completos)
-    
-    else:
-        print("\nNenhum dado lido ou arquivo não encontrado.")
-
-    print(f"Verifique a pasta: {PASTA_OUTPUT}")
-    # 2. IMPEDE O FECHAMENTO DO CONSOLE
-    print("\n")
-    input("Pressione ENTER para fechar o programa...")
