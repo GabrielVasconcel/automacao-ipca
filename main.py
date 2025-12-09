@@ -2,7 +2,6 @@ import sys
 import os
 import glob
 import base64
-import openpyxl
 from datetime import datetime, timedelta
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -15,6 +14,8 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import pandas as pd
+import camelot
+import numpy as np
 
 # --- 1. Função para garantir que os caminhos funcionem no .EXE ---
 def obter_caminho_base():
@@ -42,18 +43,152 @@ def ler_dados():
     # 1. Tenta encontrar arquivos
     arquivos_excel = glob.glob(os.path.join(PASTA_ENTRADA, "*.xlsx"))
     arquivos_csv = glob.glob(os.path.join(PASTA_ENTRADA, "*.csv"))
+    arquivos_pdf = glob.glob(os.path.join(PASTA_ENTRADA, "*.pdf"))
     
     caminho_arquivo = None
     if arquivos_excel:
         caminho_arquivo = arquivos_excel[0]
         tipo_arquivo = "xlsx"
-        # Mapeamento Padrão para Excel (use os nomes reais das suas colunas)
+        # Mapeamento Padrão para Excel
         mapa_colunas = {'EFISCO': 'efisco', 'VALOR': 'valor', 'DATA': 'data_base'}
     elif arquivos_csv:
         caminho_arquivo = arquivos_csv[0]
         tipo_arquivo = "csv"
         # Mapeamento Flexível para CSV
         mapa_colunas = {'Código do Item': 'efisco', 'Preço Unitário': 'valor', 'Data/Hora da Compra': 'data_base'}
+    elif arquivos_pdf:
+        caminho_arquivo = arquivos_pdf[0]
+        nome_arquivo_usado = os.path.basename(caminho_arquivo)
+        try:
+            tabelas = camelot.io.read_pdf(
+                caminho_arquivo, 
+                pages='all', 
+                flavor='stream', # 'stream' é bom para tabelas com poucas linhas visíveis (como a sua)
+                # O parâmetro column_names pode ser necessário para forçar a identificação correta das colunas
+            )
+
+            if not tabelas:
+                raise ValueError("Nenhuma tabela encontrada no PDF. Verifique o formato do arquivo.")
+            
+            print(f"Encontradas {tabelas.n} tabelas. Combinando dados...")
+            # 2. Combinar todas as tabelas em um único DataFrame
+            # No seu relatório, a tabela que lista os preços está dividida em várias páginas.
+            df_lista = [t.df for t in tabelas if t.df.shape[1] > 5] # Filtra apenas tabelas com mais de 5 colunas (a principal)
+
+
+            df_lista[0] = df_lista[0].drop(index=[0,1]) 
+            # Limpa a sujeira do ultimo df
+            df_ultimo = df_lista[-1]
+            for index, row in df_ultimo.iterrows():
+                if row.astype(str).str.contains('Legenda:', case=False, na=False).any():
+                    linha_legenda = index
+                    break
+            else:
+                linha_legenda = None # Nenhuma Legenda encontrada
+
+            # 3. Limpar o DataFrame
+            if linha_legenda is not None:
+                df_lista[-1] = df_ultimo.iloc[:linha_legenda] # Mantém apenas as linhas ANTES da Legenda
+            
+            df_lista_final = []
+            # corrige as colunas das tabelas
+            for i, tabela in enumerate(df_lista):
+                df_temp = tabela.copy() # Obtém o DataFrame da tabela atual
+
+                if df_temp.shape[1] == 8:
+                    # Tabela da Página 1 (ou se o Camelot acertou) - Assumimos que está correta
+
+                    # Renomeamos as colunas para facilitar a concatenação e limpeza posterior
+                    df_temp.columns = ['N°', 'Inciso', 'Nome', 'Quantidade', 'Unidade', 'Preço unitário', 'Data', 'Compõe']
+                    
+                    df_temp[['Quantidade', 'Unidade']] = df_temp['Quantidade'].str.extract(r'(\d+)\s*(.*)') # inutil, tava viajando demais
+                    df_temp = df_temp[['Preço unitário', 'Data']]
+                    
+                    for coluna in df_temp.columns:
+                        df_temp[coluna] = df_temp[coluna].replace(r'^\s*$', np.nan, regex=True)
+                    
+                    df_temp.dropna(inplace=True)
+                    df_temp["efisco"] = nome_arquivo_usado.strip('.pdf')
+                    df_lista_final.append(df_temp)
+                    
+                elif df_temp.shape[1] == 7:
+                    # Tabela da Página 2 em diante (onde Quantidade e Unidade se juntaram)
+                    print(f"   -> Reestruturando Tabela {i} (Colunas agrupadas)...")
+                    
+                    # 1. Definir os nomes das colunas atuais (7 colunas)
+                    # O agrupamento provavelmente ocorreu na 4ª coluna (índice 3)
+                    df_temp.columns = ['N°', 'Inciso', 'Nome', 'Quant_Unid_Agrupada', 'Preço unitário', 'Data', 'Compõe']
+                    
+                    # 2. Aplicar o SPLIT e extrair os dados
+                    # Usamos uma expressão regular para capturar o número da quantidade (o primeiro valor)
+                    # e o restante (a unidade)
+                    
+                    # Cria duas novas colunas: 'Quantidade' (o número) e 'Unidade' (o restante)
+                    df_temp[['Quantidade', 'Unidade']] = df_temp['Quant_Unid_Agrupada'].str.extract(r'(\d+)\s*(.*)') # inutil, tava viajando demais
+                    
+                    # 3. Reordenar e Renomear para o formato de 8 colunas (igual ao da Tabela 1)
+                    
+                    # Remove a coluna agrupada original
+                    df_temp.drop(columns=['Quant_Unid_Agrupada'], inplace=True)
+                    
+                    # A coluna 'Unidade' foi inserida no final. Vamos reordenar para o formato padrão:
+                    df_temp = df_temp[['Preço unitário', 'Data']]
+                    
+                    for coluna in df_temp.columns:
+                        df_temp[coluna] = df_temp[coluna].replace(r'^\s*$', np.nan, regex=True)
+                    
+                    df_temp.dropna(inplace=True)
+                    df_temp["efisco"] = nome_arquivo_usado.strip('.pdf')
+                    # Adiciona o DataFrame reestruturado
+                    df_lista_final.append(df_temp)
+                    
+                else:
+                    print(f"   -> Ignorando Tabela {i} ({df_temp.shape[1]} colunas), estrutura não mapeada.")
+
+            if not df_lista:
+                 raise ValueError("Nenhuma tabela de cotação principal encontrada.")
+
+        
+            df = pd.concat(df_lista_final, ignore_index=True)
+            
+            # --- FASE 3: Mapeamento e Processamento ---
+        
+            df.rename(columns={
+                'Preço unitário': 'valor_raw', # Coluna 6
+                'Data': 'data_base_raw'      # Coluna 7
+            }, inplace=True)
+            
+            
+            # 4. Processamento de Dados (Convertendo e Limpando)
+            lista_itens = []
+            codigo_item = nome_arquivo_usado.strip('.pdf')
+            # Limpeza de strings e conversão para float/date
+            for index, row in df.iterrows():
+                try:
+                    # Tenta extrair a data e valor
+                    valor_str = str(row['valor_raw']).replace('R$', '').replace('.', '').replace(',', '.').strip()
+                    valor = float(valor_str)
+                    
+                    # Converte a data para objeto date
+                    data_objeto = datetime.strptime(str(row['data_base_raw']).strip(), '%d/%m/%Y').date()
+                    
+                    lista_itens.append({
+                        'efisco': codigo_item,
+                        'valor': valor,
+                        'data_base': data_objeto
+                    })
+                except Exception as e:
+                    pass 
+                    
+            return lista_itens
+            
+        except ValueError as ve:
+            print(f"Erro na extração de PDF (Valor): {ve}")
+            return []
+        except Exception as e:
+            print(f"Erro geral ao processar PDF: {e}")
+            return []
+    
     else:
         print(f"ERRO CRÍTICO: Não encontrei nenhum arquivo .xlsx ou .csv na pasta '{PASTA_ENTRADA}'.")
         return []
@@ -122,7 +257,7 @@ def ler_dados():
 
 def verificar_necessidade_atualizacao(dados):
     data_hoje = datetime.now().date()
-    limite_dias = timedelta(days=180)
+    limite_dias = timedelta(days=60) #mudei pra testar usando o pdf
     itens_para_atualizar = []
     
     for item in dados:
@@ -135,6 +270,7 @@ def verificar_necessidade_atualizacao(dados):
             item['status'] = 'OK'
             item['dias_atraso'] = diferenca.days
             
+    print(itens_para_atualizar, dados)
     return itens_para_atualizar, dados
 
 def gerar_pdf_cdp(driver, efisco, data_base, pasta_destino, item_id):
@@ -213,7 +349,7 @@ def corrigir_valor_ipca_selenium(item, item_id):
                 gerar_pdf_cdp(driver, item['efisco'], item['data_base'], PASTA_DOWNLOAD, item_id)
                 break
             except TimeoutException:
-                print("   -> ERRO: O carregamento da página de resultados demorou mais de 5 segundos.")
+                print("   -> ERRO: O carregamento da página de resultados demorou mais de 3 segundos.")
                 print("   -> Tentando buscar atualização para o mês anterior.")
                 tentativas += 1
                 driver.get(url_calculadora) 
@@ -233,20 +369,43 @@ from PyPDF2 import PdfWriter
 
 from PyPDF2 import PdfWriter
 
-def concatena_pdf(catmat: str):
+def concatena_pdf(catmat: str, todos_dados: list): # <-- Adiciona o argumento 'todos_dados'
     """
     Concatena o relatório original (se existir) com todos os PDFs de preço gerados
-    para o EFISCO (catmat) especificado.
+    para o EFISCO (catmat) especificado, na ordem do Excel.
     """
     
-    # 1. Procura pelo relatório original
+    # 1. Filtra a ordem dos item_id (1, 2, 3...) do Excel para este EFISCO
+    # Pega apenas os índices (item_id) dos itens que pertencem a este EFISCO
+    ordem_item_ids = [
+        i + 1 for i, item in enumerate(todos_dados) 
+        if item['efisco'] == catmat and item['status'] == 'Atualizar'
+    ]
+    
+    # 2. Constrói a lista de caminhos na ORDEM CORRETA
+    arquivos_ordenados_caminho = []
+    pasta_download = PASTA_DOWNLOAD # Para abreviar
+
+    # Itera pelos item_id na ordem do Excel (e, portanto, da lista todos_dados)
+    for item_id in ordem_item_ids:
+        # Padrão de nome de arquivo: EFISCO_123_item_1Correcao_IPCA_YYYYMMDD.pdf
+        # Usamos glob para encontrar o arquivo que COMEÇA com o ID, ignorando a data
+        # Ex: "EFISCO_123_item_1Correcao*"
+        padrao_busca = os.path.join(pasta_download, f"EFISCO_{catmat}_item_{item_id}Correcao_IPCA_*.pdf")
+        
+        arquivos_encontrados = glob.glob(padrao_busca)
+        
+        if arquivos_encontrados:
+            # Adiciona o primeiro arquivo encontrado para aquele item_id
+            arquivos_ordenados_caminho.append(arquivos_encontrados[0])
+        else:
+            print(f"   -> AVISO: PDF de correção para EFISCO {catmat} (Item {item_id}) não encontrado.")
+
+
+    # 3. Procura pelo relatório original (não precisa de ordem, é só o primeiro)
     relatorio = [arq for arq in os.listdir(PASTA_ENTRADA) if arq.startswith(catmat) and arq.endswith(".pdf")]
     
-    # 2. Procura pelos PDFs gerados 
-    arquivos_gerados = [arq for arq in os.listdir(PASTA_DOWNLOAD) if arq.startswith(f"EFISCO_{catmat}") and arq.endswith(".pdf")]
-    
-    # Falha apenas no caso de ambos não existirem. i.e, gera um output se um dos dois existir.
-    if not relatorio and not arquivos_gerados:
+    if not relatorio and not arquivos_ordenados_caminho:
         print(f"   -> ATENÇÃO: Nenhuma arquivo PDF encontrado para o EFISCO {catmat} nas pastas de entrada/downloads. Nenhuma concatenação foi feita.")
         return False
         
@@ -258,11 +417,10 @@ def concatena_pdf(catmat: str):
         print(f"   -> Adicionando Relatório Base: {relatorio[0]}")
         merger.append(caminho_relatorio)
     else:
-        print(f"   -> ATENÇÃO: Não foi encontrado um relatório PDF que comece com '{catmat}' na pasta de entrada. Apenas os PDFs gerados serão concatenados.")
+        print(f"   -> ATENÇÃO: Não foi encontrado um relatório PDF que comece com '{catmat}' na pasta de entrada.")
 
-    # Adiciona todos os PDFs gerados
-    for arquivo in arquivos_gerados:
-        caminho_arquivo = os.path.join(PASTA_DOWNLOAD, arquivo)
+    # Adiciona TODOS os PDFs gerados na ordem estabelecida pelo loop
+    for caminho_arquivo in arquivos_ordenados_caminho:
         merger.append(caminho_arquivo)
     
     # Finaliza a escrita
@@ -303,7 +461,7 @@ if __name__ == "__main__":
         
         # Iterar sobre CADA código EFISCO e chamar a função
         for codigo in codigos_efisco_unicos:
-            concatena_pdf(codigo)
+            concatena_pdf(codigo, dados_completos)
     
     else:
         print("\nNenhum dado lido ou arquivo não encontrado.")
