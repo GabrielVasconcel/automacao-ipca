@@ -7,7 +7,7 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import Select
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from dateutil.relativedelta import relativedelta
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.options import Options
@@ -16,6 +16,8 @@ from selenium.webdriver.support import expected_conditions as EC
 import pandas as pd
 import camelot
 import numpy as np
+from PyPDF2 import PdfWriter
+
 
 # --- 1. Função para garantir que os caminhos funcionem no .EXE ---
 def obter_caminho_base():
@@ -303,12 +305,13 @@ def gerar_pdf_cdp(driver, efisco, data_base, pasta_destino, item_id):
         print(f"   -> ERRO ao gerar PDF via CDP: {e}")
         return False
 
-def corrigir_valor_ipca_selenium(item, item_id):
+def corrigir_valor_ipca_selenium(item, item_id, mostrar_browser=True):
     service = Service(ChromeDriverManager().install())
     
     opcoes = Options()
     
-    #opcoes.add_argument("--headless=new") 
+    if not mostrar_browser:
+        opcoes.add_argument("--headless=new") 
     
     driver = webdriver.Chrome(service=service, options=opcoes)
     driver.implicitly_wait(3) 
@@ -318,7 +321,7 @@ def corrigir_valor_ipca_selenium(item, item_id):
     
     valor_a_enviar = f"{item['valor']:.2f}".replace('.', ',')
     
-    print(f"Processando EFISCO {item['efisco']}...")
+    print(f"Processando codigo {item['efisco']}...")
 
     tentativas = 0
     max_tentativas = 2
@@ -333,8 +336,18 @@ def corrigir_valor_ipca_selenium(item, item_id):
             
             data_hoje = datetime.now().date()
             data_final_str = (data_hoje - relativedelta(months=1+tentativas)).strftime('%m%Y')
-            driver.find_element(By.NAME, 'dataFinal').send_keys(data_final_str)
             
+            # checa se o mês para o qual está tentando atualizar é o mesmo de referencia
+            data_final_str_mes = datetime.strptime(data_final_str,'%m%Y').month
+            data_origem_str_mes = item['data_base'].month
+            if data_final_str_mes == data_origem_str_mes:
+                print(f"   -> AVISO: A data final do codigo {item["efisco"]} atingiu o mesmo mês da data base. Não é possível atualizar.")
+                break
+            
+            campo_data = driver.find_element(By.NAME, 'dataFinal')
+            campo_data.clear()
+            campo_data.send_keys(data_final_str)
+
             campo_valor = driver.find_element(By.NAME, 'valorCorrecao')
             campo_valor.clear()
             campo_valor.send_keys(valor_a_enviar)
@@ -343,6 +356,14 @@ def corrigir_valor_ipca_selenium(item, item_id):
             btn_corrigir.click()
 
             try:
+                elementos_erro = driver.find_elements(By.CLASS_NAME, "msgErro")
+                if elementos_erro:
+                    tentativas += 1
+                    print(f"   -> ERRO: {elementos_erro[0].text} para data final {data_final_str}.")
+                    print(f"\n Data alterada automaticamente para {data_hoje - relativedelta(months=1+tentativas)}.")
+                    continue
+                
+
                 WebDriverWait(driver, 3).until( 
                     EC.presence_of_element_located((By.CSS_SELECTOR, "input[value='Imprimir']"))
                 )
@@ -365,11 +386,7 @@ def corrigir_valor_ipca_selenium(item, item_id):
     finally:
         driver.quit()
 
-from PyPDF2 import PdfWriter
-
-from PyPDF2 import PdfWriter
-
-def concatena_pdf(catmat: str, todos_dados: list): # <-- Adiciona o argumento 'todos_dados'
+def concatena_pdf(catmat: str, todos_dados: list): 
     """
     Concatena o relatório original (se existir) com todos os PDFs de preço gerados
     para o EFISCO (catmat) especificado, na ordem do Excel.
@@ -384,14 +401,11 @@ def concatena_pdf(catmat: str, todos_dados: list): # <-- Adiciona o argumento 't
     
     # 2. Constrói a lista de caminhos na ORDEM CORRETA
     arquivos_ordenados_caminho = []
-    pasta_download = PASTA_DOWNLOAD # Para abreviar
 
     # Itera pelos item_id na ordem do Excel (e, portanto, da lista todos_dados)
     for item_id in ordem_item_ids:
-        # Padrão de nome de arquivo: EFISCO_123_item_1Correcao_IPCA_YYYYMMDD.pdf
-        # Usamos glob para encontrar o arquivo que COMEÇA com o ID, ignorando a data
-        # Ex: "EFISCO_123_item_1Correcao*"
-        padrao_busca = os.path.join(pasta_download, f"EFISCO_{catmat}_item_{item_id}Correcao_IPCA_*.pdf")
+        
+        padrao_busca = os.path.join(PASTA_DOWNLOAD, f"EFISCO_{catmat}_item_{item_id}Correcao_IPCA_*.pdf")
         
         arquivos_encontrados = glob.glob(padrao_busca)
         
@@ -399,14 +413,14 @@ def concatena_pdf(catmat: str, todos_dados: list): # <-- Adiciona o argumento 't
             # Adiciona o primeiro arquivo encontrado para aquele item_id
             arquivos_ordenados_caminho.append(arquivos_encontrados[0])
         else:
-            print(f"   -> AVISO: PDF de correção para EFISCO {catmat} (Item {item_id}) não encontrado.")
+            print(f"   -> AVISO: PDF de correção para codigo {catmat} (Item {item_id}) não encontrado.")
 
 
     # 3. Procura pelo relatório original (não precisa de ordem, é só o primeiro)
     relatorio = [arq for arq in os.listdir(PASTA_ENTRADA) if arq.startswith(catmat) and arq.endswith(".pdf")]
     
     if not relatorio and not arquivos_ordenados_caminho:
-        print(f"   -> ATENÇÃO: Nenhuma arquivo PDF encontrado para o EFISCO {catmat} nas pastas de entrada/downloads. Nenhuma concatenação foi feita.")
+        print(f"   -> ATENÇÃO: Nenhuma arquivo PDF encontrado para o codigo {catmat} nas pastas de entrada/downloads. Nenhuma concatenação foi feita.")
         return False
         
     merger = PdfWriter()
