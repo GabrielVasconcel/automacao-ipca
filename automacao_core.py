@@ -16,8 +16,54 @@ from selenium.webdriver.support import expected_conditions as EC
 import pandas as pd
 import camelot
 import numpy as np
-from PyPDF2 import PdfWriter
+from PyPDF2 import PdfWriter, PdfReader
+import re
+import shutil
 
+def read_pdf_text(file_path):
+    """Lê o texto de um arquivo PDF e retorna como uma string."""
+    texto_completo = ""
+    try:
+        with open(file_path, 'rb') as file:
+            reader = PdfReader(file)
+            for page in reader.pages:
+                texto_completo += page.extract_text() + "\n"
+    except Exception as e:
+        print(f"Erro ao ler o PDF {file_path}: {e}")
+    return texto_completo
+
+def buscar_codigo(file_path, palavra_chave_1= "Quantidade", palavra_chave_2= "-", distancia_max_chars=100):
+    """
+    Busca a palavra_chave_1 próxima à palavra_chave_2.
+    Retorna o trecho de texto encontrado.
+    """
+    texto = read_pdf_text(file_path)
+    # 1. Escapar caracteres especiais para RegEx
+    chave_1_escapada = re.escape(palavra_chave_1)
+    chave_2_escapada = re.escape(palavra_chave_2)
+    
+    # 2. Construir a expressão regular
+    # Padrão: CHAVE_1, seguida por 0 a N caracteres (qualquer coisa), seguida por CHAVE_2
+    # O sinal '?' torna a busca não-gananciosa, buscando o casamento mais curto.
+    padrao = re.compile(
+        # Captura CHAVE_1
+        rf"({chave_1_escapada})"
+        # Captura o contexto entre (distância máxima de caracteres)
+        r"([\s\S]{0," + str(distancia_max_chars) + r"}?)"
+        # Captura CHAVE_2
+        rf"({chave_2_escapada})",
+        re.IGNORECASE | re.DOTALL # Ignora maiúsculas/minúsculas e permite que . case com newline
+    )
+    
+    # 3. Executar a busca
+    encontrados = []
+    for match in padrao.finditer(texto):
+        # match.group(0) contém o trecho completo: Chave 1 + Contexto + Chave 2
+        encontrados.append(match.group(0).strip())
+    
+    codigo = encontrados[0].split("\n")[1]
+    codigo = codigo.split(" ")[0].strip()
+    return codigo
 
 # --- 1. Função para garantir que os caminhos funcionem no .EXE ---
 def obter_caminho_base():
@@ -35,6 +81,7 @@ BASE_DIR = obter_caminho_base()
 PASTA_ENTRADA = os.path.join(BASE_DIR, "Dados de entrada") 
 PASTA_DOWNLOAD = os.path.join(BASE_DIR, "downloads_pdf")
 PASTA_OUTPUT = os.path.join(BASE_DIR, "output")
+PASTA_DETALHADO = os.path.join(BASE_DIR, "relatorio_detalhado")
 os.makedirs(PASTA_DOWNLOAD, exist_ok=True)
 os.makedirs(PASTA_OUTPUT, exist_ok=True)
 
@@ -97,13 +144,14 @@ def ler_dados(caminho_arquivo_input:str):
                     df_temp.columns = ['N°', 'Inciso', 'Nome', 'Quantidade', 'Unidade', 'Preço unitário', 'Data', 'Compõe']
                     
                     df_temp[['Quantidade', 'Unidade']] = df_temp['Quantidade'].str.extract(r'(\d+)\s*(.*)') # inutil, tava viajando demais
-                    df_temp = df_temp[['Preço unitário', 'Data']]
+                    df_temp = df_temp[['Preço unitário', 'Data']].copy()
                     
                     for coluna in df_temp.columns:
                         df_temp[coluna] = df_temp[coluna].replace(r'^\s*$', np.nan, regex=True)
                     
                     df_temp.dropna(inplace=True)
-                    df_temp["efisco"] = nome_arquivo_usado.strip('.pdf')
+                    catmat = buscar_codigo(caminho_arquivo, "Quantidade", "-")
+                    df_temp["efisco"] = catmat
                     df_lista_final.append(df_temp)
                     
                 elif df_temp.shape[1] == 7:
@@ -122,13 +170,14 @@ def ler_dados(caminho_arquivo_input:str):
                     # Remove a coluna agrupada original
                     df_temp.drop(columns=['Quant_Unid_Agrupada'], inplace=True)
                     
-                    df_temp = df_temp[['Preço unitário', 'Data']]
+                    df_temp = df_temp[['Preço unitário', 'Data']].copy()
                     
                     for coluna in df_temp.columns:
                         df_temp[coluna] = df_temp[coluna].replace(r'^\s*$', np.nan, regex=True)
                     
                     df_temp.dropna(inplace=True)
-                    df_temp["efisco"] = nome_arquivo_usado.strip('.pdf')
+                    catmat = buscar_codigo(caminho_arquivo, "Quantidade", "-")
+                    df_temp["efisco"] = catmat
                     # Adiciona o DataFrame reestruturado
                     df_lista_final.append(df_temp)
                     
@@ -151,7 +200,7 @@ def ler_dados(caminho_arquivo_input:str):
             
             # 4. Processamento de Dados (Convertendo e Limpando)
             lista_itens = []
-            codigo_item = nome_arquivo_usado.strip('.pdf')
+            codigo_item = buscar_codigo(caminho_arquivo, "Quantidade", "-") 
             # Limpeza de strings e conversão para float/date
             for index, row in df.iterrows():
                 try:
@@ -169,7 +218,6 @@ def ler_dados(caminho_arquivo_input:str):
                     })
                 except Exception as e:
                     pass 
-                    
             return lista_itens
             
         except ValueError as ve:
@@ -398,33 +446,32 @@ def concatena_pdf(catmat: str, todos_dados: list):
             arquivos_ordenados_caminho.append(arquivos_encontrados[0])
         else:
             print(f"   -> AVISO: PDF de correção para codigo {catmat} (Item {item_id}) não encontrado.")
-
-
-    # 3. Procura pelo relatório original (não precisa de ordem, é só o primeiro)
-    relatorio = [arq for arq in os.listdir(PASTA_ENTRADA) if arq.startswith(catmat) and arq.endswith(".pdf")]
     
-    if not relatorio and not arquivos_ordenados_caminho:
-        print(f"   -> ATENÇÃO: Nenhuma arquivo PDF encontrado para o codigo {catmat} nas pastas de entrada/downloads. Nenhuma concatenação foi feita.")
+    nome_relatorio_base = f"{catmat}.pdf"
+    caminho_relatorio_base = os.path.join(PASTA_DETALHADO, nome_relatorio_base)
+    
+    if not os.path.exists(caminho_relatorio_base):
+        print(f"   -> ATENÇÃO: Nenhum conteúdo para concatenação encontrado para o código {catmat}.")
         return False
+
         
     merger = PdfWriter()
-    
-    # Tenta adicionar o relatório original primeiro
-    if relatorio:
-        caminho_relatorio = os.path.join(PASTA_ENTRADA, relatorio[0])
-        print(f"   -> Adicionando Relatório Base: {relatorio[0]}")
-        merger.append(caminho_relatorio)
-    else:
-        print(f"   -> ATENÇÃO: Não foi encontrado um relatório PDF que comece com '{catmat}' na pasta de entrada.")
 
-    # Adiciona TODOS os PDFs gerados na ordem estabelecida pelo loop
+    merger.append(caminho_relatorio_base)
+
     for caminho_arquivo in arquivos_ordenados_caminho:
         merger.append(caminho_arquivo)
-    
-    # Finaliza a escrita
+
     caminho_saida = os.path.join(PASTA_OUTPUT, f"{catmat}_COMPLETO.pdf")
     merger.write(caminho_saida)
     merger.close()
-    
-    print(f"   -> SUCESSO: Arquivo final salvo em: {caminho_saida}")
     return True
+
+
+def renomeia_detalhado_catmat(caminho):
+    for arq in os.listdir(caminho):
+        catmat = buscar_codigo(os.path.join(caminho, arq))
+        if arq.startswith(f"{catmat}"):
+            continue
+        novo_nome = f"{catmat}.pdf"
+        os.rename(os.path.join(caminho, arq), os.path.join(caminho, novo_nome))

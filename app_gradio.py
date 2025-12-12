@@ -3,18 +3,57 @@ import os
 import shutil
 from datetime import datetime
 import glob
+import sys
+import time
+import gradio as gr 
+import PyPDF2
+from PyPDF2 import PdfReader
+import re
+import ctypes
+# --- CORREÇÃO PARA O ERRO UVICORN/PYINSTALLER ---
+if sys.stdout is None:
+    class NullWriter:
+        def write(self, data):
+            pass
+        def flush(self):
+            pass
+        def isatty(self):
+            return False 
+            
+    sys.stdout = NullWriter()
+    sys.stderr = NullWriter()
+
+def encerrar_sistema():
+    """
+    Tenta encerrar o processo usando os._exit. Se falhar (e estiver no Windows), 
+    usa a API do Windows para matar o processo.
+    """
+    try:
+        os._exit(0)
+    except Exception as e:
+        print(f"Falha ao usar os._exit: {e}. Tentando encerramento via ctypes.")
+        if sys.platform == "win32":
+            # Obtém o handle do processo atual e força o encerramento
+            handle = ctypes.windll.kernel32.OpenProcess(0x1F0FFF, False, os.getpid())
+            ctypes.windll.kernel32.TerminateProcess(handle, 1)
+        else:
+            # Caso não seja Windows (menos provável no seu contexto)
+            sys.exit(0)
+
 # Importa todas as funções de automação
 from automacao_core import (
-    PASTA_ENTRADA, PASTA_DOWNLOAD, PASTA_OUTPUT, 
+    PASTA_ENTRADA, PASTA_DOWNLOAD, PASTA_OUTPUT, PASTA_DETALHADO, 
     ler_dados, verificar_necessidade_atualizacao, 
     corrigir_valor_ipca_selenium, concatena_pdf,
-    obter_caminho_base 
+    obter_caminho_base, buscar_codigo, read_pdf_text,
+    renomeia_detalhado_catmat
 ) 
 
 # Garante que as pastas estejam prontas
 os.makedirs(PASTA_ENTRADA, exist_ok=True)
 os.makedirs(PASTA_DOWNLOAD, exist_ok=True)
 os.makedirs(PASTA_OUTPUT, exist_ok=True)
+os.makedirs(PASTA_DETALHADO, exist_ok=True)
 
 
 # --- Funções de Wrapper para a Interface Gradio ---
@@ -22,7 +61,7 @@ os.makedirs(PASTA_OUTPUT, exist_ok=True)
 def limpar_pastas_temp():
     """Limpa as pastas de entrada e download antes de cada execução."""
     # NÃO use shutil.rmtree no BASE_DIR, apenas nas subpastas!
-    for pasta in [PASTA_ENTRADA, PASTA_DOWNLOAD]:
+    for pasta in [PASTA_ENTRADA, PASTA_DOWNLOAD, PASTA_DETALHADO]:
         for arquivo in os.listdir(pasta):
             os.remove(os.path.join(pasta, arquivo))
 
@@ -34,24 +73,31 @@ def executar_automacao(arquivo_principal, lista_pdfs_base, mostrar_browser=True,
     
     limpar_pastas_temp()
     yield "Iniciando automação... Limpando pastas temporárias", None
+
+
     # 1. Copiar Arquivos para a PASTA_ENTRADA (Ambiente de Trabalho)
     
     # A. Arquivo Principal (Excel ou PDF Cotação)
     caminho_principal = os.path.join(PASTA_ENTRADA, os.path.basename(arquivo_principal))
     shutil.copy(arquivo_principal, caminho_principal)
-    
+
     # B. PDFs Base (Relatórios que serão concatenados)
-    efiscos_com_pdf_base = set()
     for pdf_file in lista_pdfs_base:
         # Renomeia para o nome original no Gradio e salva.
-        # EXIGÊNCIA: O nome do arquivo DEVE ser o código EFISCO.pdf
         nome_base = os.path.basename(pdf_file)
-        caminho_pdf_base = os.path.join(PASTA_ENTRADA, nome_base)
+        caminho_pdf_base = os.path.join(PASTA_DETALHADO, nome_base)
         shutil.copy(pdf_file, caminho_pdf_base)
-        efiscos_com_pdf_base.add(nome_base.replace('.pdf', ''))
+
 
     yield "Arquivos de entrada copiados. Lendo dados do arquivo principal...", None
+    
+    renomeia_detalhado_catmat(PASTA_DETALHADO)
 
+    efiscos_com_pdf_base = set()
+    for arq_renomeado in os.listdir(PASTA_DETALHADO):
+        if arq_renomeado.lower().endswith('.pdf'):
+            # Coleta o código renomeado (Ex: '123456')
+            efiscos_com_pdf_base.add(arq_renomeado.replace('.pdf', ''))
     # 2. Ler Dados e Obter Estrutura (Dados a serem corrigidos)
     
     # A função ler_dados agora aceita apenas o caminho do arquivo principal
@@ -79,21 +125,17 @@ def executar_automacao(arquivo_principal, lista_pdfs_base, mostrar_browser=True,
                 itens_restantes -= 1
 
     else:
-        print("\nNenhum item precisou de atualização (todos < 180 dias).")
+        print("\nNenhum item precisou de atualização.")
 
     
     # 4. Concatenar Resultados
-    
-    
-    # Se o arquivo principal for PDF, o EFISCO é único. Se for Excel, são múltiplos.
     codigos_para_concatenar = set(item['efisco'] for item in dados_completos)
 
-    
     arquivos_finais_gerados = []
     
     yield f"\nIniciando concatenação de PDFs para {len(codigos_para_concatenar)} códigos...", None    
     for codigo in codigos_para_concatenar:
-        if codigo in efiscos_com_pdf_base:
+        if codigo in efiscos_com_pdf_base: 
             # Chama a função de concatenação com todos os dados para obter a ordem correta
             concatena_pdf(codigo, dados_completos)
             yield f"Concatenando PDF completo para EFISCO {codigo}...", None
@@ -142,6 +184,21 @@ with gr.Blocks(title="Automação de Correção de IPCA") as demo:
             outputs=[output_text, output_files_text]
         )
 
+        with gr.Row():
+        # Botão estilizado para parecer um botão de perigo/parar
+            btn_sair = gr.Button("❌ Fechar Programa Completamente", variant="stop")
+            
+            # Texto invisível apenas para fins de evento (necessário para o clique funcionar sem output visual)
+        killer_output = gr.Textbox(visible=False)
+
+        # Ação do botão
+        btn_sair.click(
+            fn=encerrar_sistema,
+            inputs=None,
+            outputs=killer_output,
+            js="window.close()" # Tenta fechar a aba do navegador também (funciona em alguns browsers)
+        )
+
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(inbrowser=True, server_port=7860)

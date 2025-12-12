@@ -7,8 +7,12 @@ downloads_pdf/
 *.log
 .DS_Store
 
+ads.py
+
 build/
 dist/
 temp/
 output/
 Dados de Entrada/
+teste_cotacao/
+relatorio_detalhado/
