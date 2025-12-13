@@ -65,7 +65,7 @@ def limpar_pastas_temp():
         for arquivo in os.listdir(pasta):
             os.remove(os.path.join(pasta, arquivo))
 
-def executar_automacao(arquivo_principal, lista_pdfs_base, mostrar_browser=True, periodo_atualizacao=60):
+def executar_automacao(arquivo_principal, lista_pdfs_base, mostrar_browser=True, periodo_atualizacao=60, auto_extrair_catmat=True):
     """
     Executa a automação baseada no tipo de arquivo principal e usa a lista_pdfs_base 
     para concatenar os resultados.
@@ -91,7 +91,10 @@ def executar_automacao(arquivo_principal, lista_pdfs_base, mostrar_browser=True,
 
     yield "Arquivos de entrada copiados. Lendo dados do arquivo principal...", None
     
-    renomeia_detalhado_catmat(PASTA_DETALHADO)
+    # Se a extração automática estiver habilitada, renomeia os PDFs detalhados
+    # Para permitir o usuário renomear manualmente (atualmente principalmente para casos de não usar o compras, i.e., usar o fonte de preços)
+    if auto_extrair_catmat:
+        renomeia_detalhado_catmat(PASTA_DETALHADO)
 
     efiscos_com_pdf_base = set()
     for arq_renomeado in os.listdir(PASTA_DETALHADO):
@@ -167,10 +170,13 @@ with gr.Blocks(title="Automação de Correção de IPCA") as demo:
         periodo_atualizacao = gr.Number(label="Atualizar a partir de (dias)", value=60, interactive=True)
 
         # Entrada do Excel
-        main_file = gr.File(label="1. Carregar Arquivo Excel (efisco, valor e data) ou PDF (cotação resumida)", file_types=[".xlsx", ".pdf"])
+        main_file = gr.File(label="Cotação Resumida (Compras) ou Excel (catmat, valor e data)", file_types=[".xlsx", ".pdf"])
         
+
+        auto_nome = gr.Checkbox(label="Extrair catmat automaticamente do documento", value=True, info="Habilite para renomear automaticamente os PDFs detalhados com base no código extraído do conteúdo do PDF. Desabilite no caso de estar usando arquivo que não seja do compras (Necessário renomear o arquivo com o(s) código(s) usado(s) no arquivo da entrada principal).")
+
         # Entrada dos PDFs (Múltipla Seleção)
-        pdf_reports = gr.Files(label="2. Carregar PDFs de Relatório (Nomear como EFISCO.pdf)", file_types=[".pdf"])
+        pdf_reports = gr.Files(label="Cotação Detalhado", file_types=[".pdf"])
 
         btn_excel_run = gr.Button("🚀 Executar Automação")
         
@@ -180,7 +186,7 @@ with gr.Blocks(title="Automação de Correção de IPCA") as demo:
 
         btn_excel_run.click(
             fn=executar_automacao, 
-            inputs=[main_file, pdf_reports, mostrar_browser, periodo_atualizacao], 
+            inputs=[main_file, pdf_reports, mostrar_browser, periodo_atualizacao, auto_nome], 
             outputs=[output_text, output_files_text]
         )
 
