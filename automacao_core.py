@@ -475,3 +475,18 @@ def renomeia_detalhado_catmat(caminho):
             continue
         novo_nome = f"{catmat}.pdf"
         os.rename(os.path.join(caminho, arq), os.path.join(caminho, novo_nome))
+
+class AutomationState:
+    """Gerencia o estado global de interrupção da automação."""
+    def __init__(self):
+        self.should_stop = False
+
+    def request_stop(self):
+        """Sinaliza para a automação que ela deve parar."""
+        self.should_stop = True
+
+    def reset(self):
+        """Reseta a flag antes de uma nova execução."""
+        self.should_stop = False
+
+GLOBAL_STATE = AutomationState()

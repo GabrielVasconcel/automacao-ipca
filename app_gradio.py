@@ -42,7 +42,7 @@ def encerrar_sistema():
 
 # Importa todas as funções de automação
 from automacao_core import (
-    PASTA_ENTRADA, PASTA_DOWNLOAD, PASTA_OUTPUT, PASTA_DETALHADO, 
+    PASTA_ENTRADA, PASTA_DOWNLOAD, PASTA_OUTPUT, PASTA_DETALHADO, GLOBAL_STATE, 
     ler_dados, verificar_necessidade_atualizacao, 
     corrigir_valor_ipca_selenium, concatena_pdf,
     obter_caminho_base, buscar_codigo, read_pdf_text,
@@ -57,6 +57,12 @@ os.makedirs(PASTA_DETALHADO, exist_ok=True)
 
 
 # --- Funções de Wrapper para a Interface Gradio ---
+
+def interromper_execucao():
+    """Define o flag de interrupção para True, parando o loop da automação."""
+    GLOBAL_STATE.request_stop()
+    # Retorna uma mensagem de status para o log do Gradio
+    return "Sinal de interrupção enviado. O processo tentará parar após a conclusão da tarefa de correção atual."
 
 def limpar_pastas_temp():
     """Limpa as pastas de entrada e download antes de cada execução."""
@@ -74,6 +80,7 @@ def executar_automacao(arquivo_principal, lista_pdfs_base, mostrar_browser=True,
     limpar_pastas_temp()
     yield "Iniciando automação... Limpando pastas temporárias", None
 
+    GLOBAL_STATE.reset()
 
     # 1. Copiar Arquivos para a PASTA_ENTRADA (Ambiente de Trabalho)
     
@@ -121,6 +128,12 @@ def executar_automacao(arquivo_principal, lista_pdfs_base, mostrar_browser=True,
         itens_restantes = total_a_atualizar
         # O índice 'i' deve ser único em todos os dados lidos
         for i, item in enumerate(dados_completos):
+
+            # Verifica se o usuário solicitou a interrupção
+            if GLOBAL_STATE.should_stop:
+                yield "Execução interrompida pelo usuário.", None
+                return 
+
             item_id = i + 1
             if item['status'] == 'Atualizar':
                 yield f"Atualizando item {item_id}/{len(dados_completos)} (Codigo {item['efisco']}). Restantes: {itens_restantes - 1}.", None
@@ -178,7 +191,10 @@ with gr.Blocks(title="Automação de Correção de IPCA") as demo:
         # Entrada dos PDFs (Múltipla Seleção)
         pdf_reports = gr.Files(label="Cotação Detalhado", file_types=[".pdf"])
 
-        btn_excel_run = gr.Button("🚀 Executar Automação")
+    
+        btn_excel_run = gr.Button("🚀 Executar Automação", variant="primary")
+        
+        btn_stop = gr.Button("🛑 Interromper Execução", variant="secondary")
         
         # Saída do Modo 1
         output_text = gr.Textbox(label="Status da Execução / Log")
@@ -188,6 +204,12 @@ with gr.Blocks(title="Automação de Correção de IPCA") as demo:
             fn=executar_automacao, 
             inputs=[main_file, pdf_reports, mostrar_browser, periodo_atualizacao, auto_nome], 
             outputs=[output_text, output_files_text]
+        )
+
+        btn_stop.click(
+            fn=interromper_execucao,
+            inputs=None,
+            outputs=output_text # O output é apenas uma mensagem de status
         )
 
         with gr.Row():
