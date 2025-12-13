@@ -6,6 +6,7 @@ downloads_pdf/
 *.zip
 *.log
 .DS_Store
+*.spec
 
 ads.py
 
