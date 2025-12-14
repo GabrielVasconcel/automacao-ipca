@@ -101,7 +101,7 @@ def ler_dados(caminho_arquivo_input:str):
         caminho_arquivo = caminho_arquivo_input
         tipo_arquivo = "xlsx"
         # Mapeamento Padrão para Excel
-        mapa_colunas = {'EFISCO': 'efisco', 'VALOR': 'valor', 'DATA': 'data_base'}
+        mapa_colunas = {'CATMAT': 'efisco', 'VALOR': 'valor', 'DATA': 'data_base'}
     elif nome_arquivo.endswith(".pdf"):
         caminho_arquivo = caminho_arquivo_input
         nome_arquivo_usado = os.path.basename(caminho_arquivo)
