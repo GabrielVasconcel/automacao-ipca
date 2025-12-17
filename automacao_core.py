@@ -19,6 +19,9 @@ import numpy as np
 from PyPDF2 import PdfWriter, PdfReader
 import re
 import shutil
+import io
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4
 
 def read_pdf_text(file_path):
     """Lê o texto de um arquivo PDF e retorna como uma string."""
@@ -102,6 +105,34 @@ def ler_dados(caminho_arquivo_input:str):
         tipo_arquivo = "xlsx"
         # Mapeamento Padrão para Excel
         mapa_colunas = {'CATMAT': 'efisco', 'VALOR': 'valor', 'DATA': 'data_base'}
+    elif nome_arquivo.endswith('.csv'):
+        csv = pd.read_csv(caminho_arquivo_input, encoding='latin1', sep=';',skiprows=2, usecols=['Código do Item', 'Preço Unitário', 'Data/Hora da Compra'])
+        csv.rename(columns={
+            'Código do Item': 'efisco',
+            'Preço Unitário': 'valor',
+            'Data/Hora da Compra': 'data_base'
+            }, inplace=True)
+        csv["data_base"] = csv["data_base"].astype(str)
+        lista_itens = []
+        # Limpeza de strings e conversão para float/date
+        for index, row in csv.iterrows():
+            try:
+                # Tenta extrair a data e valor
+                codigo_item = str(row['efisco']).strip()
+                valor = float((row['valor']).replace(",", ".").strip())
+                
+                # Converte a data para objeto date
+                data_objeto = datetime.strptime(str(row['data_base']).strip(), '%d/%m/%Y %H:%M').date()
+                
+                lista_itens.append({
+                    'efisco': codigo_item,
+                    'valor': valor,
+                    'data_base': data_objeto
+                })
+            except Exception as e:
+                pass 
+        return lista_itens
+
     elif nome_arquivo.endswith(".pdf"):
         caminho_arquivo = caminho_arquivo_input
         nome_arquivo_usado = os.path.basename(caminho_arquivo)
@@ -109,7 +140,7 @@ def ler_dados(caminho_arquivo_input:str):
             tabelas = camelot.io.read_pdf(
                 caminho_arquivo, 
                 pages='all', 
-                flavor='stream', # 'stream' é bom para tabelas com poucas linhas visíveis (como a sua)
+                flavor='stream', 
             )
 
             if not tabelas:
@@ -240,7 +271,6 @@ def ler_dados(caminho_arquivo_input:str):
         # 3. Normalização e Mapeamento de Colunas
         df.columns = df.columns.str.upper().str.strip()
         
-        # Invertemos o mapa para verificar se a coluna original (key) está no DF
         colunas_para_renomear = {}
         for nome_original, nome_novo in mapa_colunas.items():
             if nome_original in df.columns:
@@ -322,13 +352,41 @@ def gerar_pdf_cdp(driver, efisco, data_base, pasta_destino, item_id):
         }
         
         resultado = driver.execute_cdp_cmd("Page.printToPDF", params)
+        pdf_bytes = base64.b64decode(resultado['data'])
+
+        packet = io.BytesIO()
+        can = canvas.Canvas(packet, pagesize=A4)
+        can.setStrokeColorRGB(0.7, 0.7, 0.7) # Cinza claro
+        can.setLineWidth(0.5)
+        can.line(30, 45, 565, 45) # Linha horizontal
         
+        # Configura o texto do Item_ID
+        can.setFont("Helvetica", 9)
+        can.setFillColorRGB(0.3, 0.3, 0.3) # Cinza escuro
+        can.drawString(30, 32, f"Identificador da Automação: Item {item_id}")
+        
+        # Adiciona a data de processamento no canto direito do rodapé
+        can.drawRightString(565, 32, f"Processado em: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+        
+        can.save()
+        packet.seek(0)
+
+        overlay_pdf = PdfReader(packet)
+        original_pdf = PdfReader(io.BytesIO(pdf_bytes))
+        output = PdfWriter()
+        for page in original_pdf.pages:
+            page.merge_page(overlay_pdf.pages[0])
+            output.add_page(page)
+
+
         data_formatada = data_base.strftime('%d%m%Y')
         nome_arquivo = f"EFISCO_{efisco}_item_{item_id}Correcao_IPCA_{data_formatada}.pdf"
         caminho_completo = os.path.join(pasta_destino, nome_arquivo)
         
+        # INSERIR AQUI A EDIÇÃO DO PDF COM O ITEM_ID NO RODAPÉ, SE NECESSÁRIO
+
         with open(caminho_completo, 'wb') as f:
-            f.write(base64.b64decode(resultado['data']))
+            output.write(f)
             
         print(f"   -> PDF SALVO: {nome_arquivo}")
         return True

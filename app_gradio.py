@@ -183,10 +183,10 @@ with gr.Blocks(title="Automação de Correção de IPCA") as demo:
         periodo_atualizacao = gr.Number(label="Atualizar a partir de (dias)", value=60, interactive=True)
 
         # Entrada do Excel
-        main_file = gr.File(label="Cotação Resumida (Compras) ou Excel (catmat, valor e data)", file_types=[".xlsx", ".pdf"])
+        main_file = gr.File(label="Cotação Resumida (Compras) ou Excel (catmat, valor e data)", file_types=[".xlsx", ".pdf", ".csv"])
         
 
-        auto_nome = gr.Checkbox(label="Extrair catmat automaticamente do documento", value=True, info="Habilite para renomear automaticamente os PDFs detalhados com base no código extraído do conteúdo do PDF. Desabilite no caso de estar usando arquivo que não seja do compras (Necessário renomear o arquivo com o(s) código(s) usado(s) no arquivo da entrada principal).")
+        auto_nome = gr.Checkbox(label="Extrair catmat automaticamente do documento", value=True, info="Habilite para renomear automaticamente os PDFs detalhados com base no código extraído do conteúdo do PDF. Desabilite no caso de estar usando arquivo que não seja do compras (Necessário renomear o(s) arquivo(s) com o(s) código(s) usado(s) no arquivo da entrada principal).")
 
         # Entrada dos PDFs (Múltipla Seleção)
         pdf_reports = gr.Files(label="Cotação Detalhado", file_types=[".pdf"])
@@ -209,14 +209,14 @@ with gr.Blocks(title="Automação de Correção de IPCA") as demo:
         btn_stop.click(
             fn=interromper_execucao,
             inputs=None,
-            outputs=output_text # O output é apenas uma mensagem de status
+            outputs=output_text 
         )
 
         with gr.Row():
         # Botão estilizado para parecer um botão de perigo/parar
             btn_sair = gr.Button("❌ Fechar Programa Completamente", variant="stop")
             
-            # Texto invisível apenas para fins de evento (necessário para o clique funcionar sem output visual)
+            # Texto invisível apenas para fins de evento 
         killer_output = gr.Textbox(visible=False)
 
         # Ação do botão
@@ -224,7 +224,7 @@ with gr.Blocks(title="Automação de Correção de IPCA") as demo:
             fn=encerrar_sistema,
             inputs=None,
             outputs=killer_output,
-            js="window.close()" # Tenta fechar a aba do navegador também (funciona em alguns browsers)
+            js="window.close()" 
         )
 
 
