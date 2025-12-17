@@ -170,6 +170,19 @@ def executar_automacao(arquivo_principal, lista_pdfs_base, mostrar_browser=True,
         yield "Concluído, mas nenhum arquivo PDF final foi gerado.", None
         return  None
 
+TEMPLATE_PATH = "template_ipca.xlsx"
+
+# Função para garantir que o arquivo existe (exemplo de criação rápida)
+def criar_template_se_nao_existir():
+    if not os.path.exists(TEMPLATE_PATH):
+        # Aqui você poderia usar pandas para criar um excel básico se quiser
+        import pandas as pd
+        df = pd.DataFrame(data={"catmat":["123456"],"valor": ["10,12"],"data": ["dd/mm/yyyy"]},columns=["catmat", "valor", "data"])
+        df.to_excel(TEMPLATE_PATH, index=False)
+    return TEMPLATE_PATH
+
+
+
 
 # --- Interface Gradio ---
 
@@ -177,6 +190,10 @@ with gr.Blocks(title="Automação de Correção de IPCA") as demo:
     gr.Markdown("# 🤖 Automação de Correção Monetária (IPCA)")
 
     with gr.Tab("Principal"):
+        gr.File(
+            value=criar_template_se_nao_existir(), 
+            label="📥 Baixar Template Excel (Referência)",
+            interactive=False             )
         gr.Markdown("#### 📁 Entrada de Dados")
 
         mostrar_browser = gr.Checkbox(label="Mostrar Navegador Durante a Execução", value=False)
