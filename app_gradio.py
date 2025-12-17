@@ -120,6 +120,7 @@ def executar_automacao(arquivo_principal, lista_pdfs_base, mostrar_browser=True,
     # 3. Processar e Gerar Atualizações de Preço
     
     itens_a_corrigir, dados_completos = verificar_necessidade_atualizacao(dados_a_corrigir, periodo_atualizacao)
+    total_dados = len(dados_completos)
 
     total_a_atualizar = len(itens_a_corrigir)
     if total_a_atualizar > 0:
@@ -135,8 +136,9 @@ def executar_automacao(arquivo_principal, lista_pdfs_base, mostrar_browser=True,
                 return 
 
             item_id = i + 1
+            pulados = total_dados - total_a_atualizar
             if item['status'] == 'Atualizar':
-                yield f"Atualizando item {item_id}/{len(dados_completos)} (Codigo {item['efisco']}). Restantes: {itens_restantes - 1}.", None
+                yield f"Primeiros {pulados} itens não necessitam atualização. Atualizando item {item_id}/{len(dados_completos)} (Codigo {item['efisco']}). Restantes: {itens_restantes - 1}.", None
                 corrigir_valor_ipca_selenium(item, item_id, mostrar_browser)
                 itens_restantes -= 1
 
