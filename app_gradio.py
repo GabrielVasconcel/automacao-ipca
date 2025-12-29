@@ -46,7 +46,7 @@ from automacao_core import (
     ler_dados, verificar_necessidade_atualizacao, 
     corrigir_valor_ipca_selenium, concatena_pdf,
     obter_caminho_base, buscar_codigo, read_pdf_text,
-    renomeia_detalhado_catmat
+    renomeia_detalhado_catmat, renomeia_fonte_precos
 ) 
 
 # Garante que as pastas estejam prontas
@@ -71,7 +71,7 @@ def limpar_pastas_temp():
         for arquivo in os.listdir(pasta):
             os.remove(os.path.join(pasta, arquivo))
 
-def executar_automacao(arquivo_principal, lista_pdfs_base, mostrar_browser=True, periodo_atualizacao=60, auto_extrair_catmat=True):
+def executar_automacao(arquivo_principal, lista_pdfs_base, mostrar_browser=True, periodo_atualizacao=60, auto_extrair_catmat=True, fonte="Compras.gov"):
     """
     Executa a automação baseada no tipo de arquivo principal e usa a lista_pdfs_base 
     para concatenar os resultados.
@@ -100,8 +100,12 @@ def executar_automacao(arquivo_principal, lista_pdfs_base, mostrar_browser=True,
     
     # Se a extração automática estiver habilitada, renomeia os PDFs detalhados
     # Para permitir o usuário renomear manualmente (atualmente principalmente para casos de não usar o compras, i.e., usar o fonte de preços)
-    if auto_extrair_catmat:
+    if auto_extrair_catmat and fonte == "Compras.gov":
         renomeia_detalhado_catmat(PASTA_DETALHADO)
+    
+    if fonte == "Fonte de Preços":
+        yield "Renomeando arquivos detalhados com base na Fonte de Preços...", None
+        renomeia_fonte_precos(PASTA_DETALHADO)
 
     efiscos_com_pdf_base = set()
     for arq_renomeado in os.listdir(PASTA_DETALHADO):
@@ -110,8 +114,7 @@ def executar_automacao(arquivo_principal, lista_pdfs_base, mostrar_browser=True,
             efiscos_com_pdf_base.add(arq_renomeado.replace('.pdf', ''))
     # 2. Ler Dados e Obter Estrutura (Dados a serem corrigidos)
     
-    # A função ler_dados agora aceita apenas o caminho do arquivo principal
-    dados_a_corrigir = ler_dados(caminho_principal)
+    dados_a_corrigir = ler_dados(caminho_principal, fonte=fonte)
     
     if not dados_a_corrigir:
         yield "ERRO: Falha ao ler dados do arquivo principal ou arquivo vazio/inválido.", None
@@ -202,8 +205,16 @@ with gr.Blocks(title="Automação de Correção de IPCA") as demo:
         periodo_atualizacao = gr.Number(label="Atualizar a partir de (dias)", value=60, interactive=True)
 
         # Entrada do Excel
+
+        with gr.Row():
+        # 1. Botão de seleção da fonte
+            selecao_fonte = gr.Radio(
+                choices=["Fonte de Preços", "Compras.gov"],
+                label="Qual a origem do arquivo CSV?",
+                value="Compras.gov" # Valor padrão
+            )
+  
         main_file = gr.File(label="Cotação Resumida (Compras) ou Excel (catmat, valor e data)", file_types=[".xlsx", ".pdf", ".csv"])
-        
 
         auto_nome = gr.Checkbox(label="Extrair catmat automaticamente do documento", value=True, info="Habilite para renomear automaticamente os PDFs detalhados com base no código extraído do conteúdo do PDF. Desabilite no caso de estar usando arquivo que não seja do compras (Necessário renomear o(s) arquivo(s) com o(s) código(s) usado(s) no arquivo da entrada principal).")
 
@@ -221,7 +232,7 @@ with gr.Blocks(title="Automação de Correção de IPCA") as demo:
 
         btn_excel_run.click(
             fn=executar_automacao, 
-            inputs=[main_file, pdf_reports, mostrar_browser, periodo_atualizacao, auto_nome], 
+            inputs=[main_file, pdf_reports, mostrar_browser, periodo_atualizacao, auto_nome, selecao_fonte], 
             outputs=[output_text, output_files_text]
         )
 

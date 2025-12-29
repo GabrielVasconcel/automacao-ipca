@@ -91,7 +91,7 @@ os.makedirs(PASTA_OUTPUT, exist_ok=True)
 
 # --- Funções do Script ---
 
-def ler_dados(caminho_arquivo_input:str):
+def ler_dados(caminho_arquivo_input:str, fonte = "Compras.gov"):
     # 1. Tenta encontrar arquivos
     if not os.path.exists(caminho_arquivo_input):
         print(f"ERRO: Arquivo não encontrado no caminho: {caminho_arquivo_input}")
@@ -106,33 +106,10 @@ def ler_dados(caminho_arquivo_input:str):
         # Mapeamento Padrão para Excel
         mapa_colunas = {'CATMAT': 'efisco', 'VALOR': 'valor', 'DATA': 'data_base'}
     elif nome_arquivo.endswith('.csv'):
-        csv = pd.read_csv(caminho_arquivo_input, encoding='latin1', sep=';',skiprows=2, usecols=['Código do Item', 'Preço Unitário', 'Data/Hora da Compra'])
-        csv.rename(columns={
-            'Código do Item': 'efisco',
-            'Preço Unitário': 'valor',
-            'Data/Hora da Compra': 'data_base'
-            }, inplace=True)
-        csv["data_base"] = csv["data_base"].astype(str)
-        lista_itens = []
-        # Limpeza de strings e conversão para float/date
-        for index, row in csv.iterrows():
-            try:
-                # Tenta extrair a data e valor
-                codigo_item = str(row['efisco']).strip()
-                valor = float((row['valor']).replace(",", ".").strip())
-                
-                # Converte a data para objeto date
-                data_objeto = datetime.strptime(str(row['data_base']).strip(), '%d/%m/%Y %H:%M').date()
-                
-                lista_itens.append({
-                    'efisco': codigo_item,
-                    'valor': valor,
-                    'data_base': data_objeto
-                })
-            except Exception as e:
-                pass 
-        return lista_itens
-
+        if fonte == "Fonte de Preços":
+            return fonte_csv(caminho_arquivo_input)
+        elif fonte == "Compras.gov":
+            return compras_csv(caminho_arquivo_input)
     elif nome_arquivo.endswith(".pdf"):
         caminho_arquivo = caminho_arquivo_input
         nome_arquivo_usado = os.path.basename(caminho_arquivo)
@@ -356,17 +333,15 @@ def gerar_pdf_cdp(driver, efisco, data_base, pasta_destino, item_id):
 
         packet = io.BytesIO()
         can = canvas.Canvas(packet, pagesize=A4)
-        can.setStrokeColorRGB(0.7, 0.7, 0.7) # Cinza claro
+        can.setStrokeColorRGB(0.7, 0.7, 0.7)
         can.setLineWidth(0.5)
-        can.line(30, 45, 565, 45) # Linha horizontal
+        can.line(30, 550, 565, 550) 
         
-        # Configura o texto do Item_ID
         can.setFont("Helvetica", 9)
-        can.setFillColorRGB(0.3, 0.3, 0.3) # Cinza escuro
-        can.drawString(30, 32, f"Identificador da Automação: Item {item_id}")
+        can.setFillColorRGB(0.3, 0.3, 0.3) 
+        can.drawString(400,500, f"Identificador da Automação: Item {item_id}")
         
-        # Adiciona a data de processamento no canto direito do rodapé
-        can.drawRightString(565, 32, f"Processado em: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+        can.drawRightString(200, 500, f"Processado em: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
         
         can.save()
         packet.seek(0)
@@ -383,7 +358,6 @@ def gerar_pdf_cdp(driver, efisco, data_base, pasta_destino, item_id):
         nome_arquivo = f"EFISCO_{efisco}_item_{item_id}Correcao_IPCA_{data_formatada}.pdf"
         caminho_completo = os.path.join(pasta_destino, nome_arquivo)
         
-        # INSERIR AQUI A EDIÇÃO DO PDF COM O ITEM_ID NO RODAPÉ, SE NECESSÁRIO
 
         with open(caminho_completo, 'wb') as f:
             output.write(f)
@@ -533,6 +507,101 @@ def renomeia_detalhado_catmat(caminho):
             continue
         novo_nome = f"{catmat}.pdf"
         os.rename(os.path.join(caminho, arq), os.path.join(caminho, novo_nome))
+
+
+# AQUI O ERRO
+def renomeia_fonte_precos(caminho):
+    """
+    Renomeia os PDFs na pasta 'relatorio_detalhado' com base no nome do item 
+    extraído do CSV correspondente na 'PASTA_ENTRADA'.
+    """
+    # Lista arquivos CSV para achar o nome do item
+    csvs = glob.glob(os.path.join(PASTA_ENTRADA, "*.csv"))
+    if not csvs: return
+
+    # Pega o primeiro CSV para extrair o nome (assumindo um por vez)
+    df = pd.read_csv(csvs[0], header=None)
+    nome_item = df.iat[1,3].replace("Relatório da cotação: ", "").replace(" ", "_").strip()
+
+    for arq in os.listdir(caminho):
+        if arq.lower().endswith(".pdf"):
+            antigo = os.path.join(caminho, arq)
+            novo = os.path.join(caminho, f"{nome_item}.pdf")
+            if antigo != novo:
+                os.rename(antigo, novo)
+                print(f"Renomeado base detalhado para: {nome_item}.pdf")
+
+def fonte_csv(caminho_arquivo):
+    df = pd.read_csv(caminho_arquivo, header=None)
+
+    nome_item = df.iat[1,3]
+    nome_item = nome_item.replace("Relatório da cotação: ", "")
+    nome_item = nome_item.replace(" ", "_")
+
+    n_valores = int(df.iat[12,5])
+
+    df = df.iloc[14:14 + (n_valores*3), [6,7,8]]
+
+    df.dropna(inplace=True)
+    df.columns = ['Data', 'Quantidade', 'Valor']
+
+    df.reset_index(drop=True, inplace=True)
+    df.drop(columns=['Quantidade'], inplace=True)
+
+    df["Data"] = df["Data"].where(df["Data"] != "Data", np.nan)
+    df["Valor"] = df["Valor"].where(df["Valor"] != "Preço", np.nan)
+    df.dropna(inplace=True)
+
+    df["Data"] = pd.to_datetime(df["Data"], format="%d/%m/%Y - %H:%M:%S").dt.date
+    df["Valor"] = df["Valor"].str.replace("R$", "").str.replace(",", ".").str.strip().astype(float)
+
+    df["efisco"] = nome_item
+    lista_itens = []
+    # Limpeza de strings e conversão para float/date
+    for index, row in df.iterrows():
+        try:
+            # Tenta extrair a data e valor
+            codigo_item = str(row['efisco']).strip()
+            valor = float(row['Valor'])
+            
+            data_objeto = row['Data']
+            
+            lista_itens.append({
+                'efisco': codigo_item,
+                'valor': valor,
+                'data_base': data_objeto
+            })
+        except Exception as e:
+            pass 
+    return lista_itens
+
+def compras_csv(caminho_arquivo):
+    csv = pd.read_csv(caminho_arquivo, encoding='latin1', sep=';',skiprows=2, usecols=['Código do Item', 'Preço Unitário', 'Data/Hora da Compra'])
+    csv.rename(columns={
+        'Código do Item': 'efisco',
+        'Preço Unitário': 'valor',
+        'Data/Hora da Compra': 'data_base'
+        }, inplace=True)
+    csv["data_base"] = csv["data_base"].astype(str)
+    lista_itens = []
+    # Limpeza de strings e conversão para float/date
+    for index, row in csv.iterrows():
+        try:
+            # Tenta extrair a data e valor
+            codigo_item = str(row['efisco']).strip()
+            valor = float((row['valor']).replace(",", ".").strip())
+            
+            # Converte a data para objeto date
+            data_objeto = datetime.strptime(str(row['data_base']).strip(), '%d/%m/%Y %H:%M').date()
+            
+            lista_itens.append({
+                'efisco': codigo_item,
+                'valor': valor,
+                'data_base': data_objeto
+            })
+        except Exception as e:
+            pass 
+    return lista_itens
 
 class AutomationState:
     """Gerencia o estado global de interrupção da automação."""

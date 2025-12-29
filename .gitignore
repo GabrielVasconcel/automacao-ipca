@@ -8,8 +8,6 @@ downloads_pdf/
 .DS_Store
 *.spec
 
-ads.py
-
 build/
 dist/
 temp/
@@ -17,3 +15,6 @@ output/
 Dados de Entrada/
 teste_cotacao/
 relatorio_detalhado/
+
+teste.py
+Automacao_IPCA.spec
