@@ -7,7 +7,7 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import Select
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException
 from dateutil.relativedelta import relativedelta
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.options import Options
@@ -18,7 +18,6 @@ import camelot
 import numpy as np
 from PyPDF2 import PdfWriter, PdfReader
 import re
-import shutil
 import io
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
@@ -39,6 +38,7 @@ def buscar_codigo(file_path, palavra_chave_1= "Quantidade", palavra_chave_2= "-"
     """
     Busca a palavra_chave_1 próxima à palavra_chave_2.
     Retorna o trecho de texto encontrado.
+    Baseado no formato do PDF gerado pelo Compras.gov.br
     """
     texto = read_pdf_text(file_path)
     # 1. Escapar caracteres especiais para RegEx
@@ -47,7 +47,6 @@ def buscar_codigo(file_path, palavra_chave_1= "Quantidade", palavra_chave_2= "-"
     
     # 2. Construir a expressão regular
     # Padrão: CHAVE_1, seguida por 0 a N caracteres (qualquer coisa), seguida por CHAVE_2
-    # O sinal '?' torna a busca não-gananciosa, buscando o casamento mais curto.
     padrao = re.compile(
         # Captura CHAVE_1
         rf"({chave_1_escapada})"
@@ -92,6 +91,11 @@ os.makedirs(PASTA_OUTPUT, exist_ok=True)
 # --- Funções do Script ---
 
 def ler_dados(caminho_arquivo_input:str, fonte = "Compras.gov"):
+    """
+    Obtém os dados do arquivo de entrada (Excel, CSV ou PDF) e retorna uma lista de dicionários.
+    Cada dicionário contém as chaves: 'efisco', 'valor', 'data_base'
+
+    """
     # 1. Tenta encontrar arquivos
     if not os.path.exists(caminho_arquivo_input):
         print(f"ERRO: Arquivo não encontrado no caminho: {caminho_arquivo_input}")
@@ -112,7 +116,6 @@ def ler_dados(caminho_arquivo_input:str, fonte = "Compras.gov"):
             return compras_csv(caminho_arquivo_input)
     elif nome_arquivo.endswith(".pdf"):
         caminho_arquivo = caminho_arquivo_input
-        nome_arquivo_usado = os.path.basename(caminho_arquivo)
         try:
             tabelas = camelot.io.read_pdf(
                 caminho_arquivo, 
@@ -121,111 +124,84 @@ def ler_dados(caminho_arquivo_input:str, fonte = "Compras.gov"):
             )
 
             if not tabelas:
-                raise ValueError("Nenhuma tabela encontrada no PDF. Verifique o formato do arquivo.")
+                raise ValueError("Nenhuma tabela encontrada no PDF.")
             
             print(f"Encontradas {tabelas.n} tabelas. Combinando dados...")
-            # 2. Combinar todas as tabelas em um único DataFrame
-            df_lista = [t.df for t in tabelas if t.df.shape[1] > 5] # Filtra apenas tabelas com mais de 5 colunas (a principal)
+            
+            # Filtra tabelas que tenham as colunas de interesse (Preço e Data)
+            df_lista = [t.df for t in tabelas if t.df.shape[1] >= 7] 
 
+            if not df_lista:
+                 raise ValueError("Nenhuma tabela de cotação com estrutura compatível encontrada.")
 
-            df_lista[0] = df_lista[0].drop(index=[0,1]) 
-            # Limpa a sujeira do ultimo df
+            # Remove cabeçalhos da primeira página
+            df_lista[0] = df_lista[0].drop(index=[0, 1]) 
+            
+            # Localiza a legenda no último DataFrame para cortar o rodapé
             df_ultimo = df_lista[-1]
+            linha_legenda = None
             for index, row in df_ultimo.iterrows():
                 if row.astype(str).str.contains('Legenda:', case=False, na=False).any():
                     linha_legenda = index
                     break
-            else:
-                linha_legenda = None # Nenhuma Legenda encontrada
-
-            # 3. Limpar o DataFrame
+            
             if linha_legenda is not None:
-                df_lista[-1] = df_ultimo.iloc[:linha_legenda] # Mantém apenas as linhas ANTES da Legenda
+                df_lista[-1] = df_ultimo.iloc[:linha_legenda]
             
             df_lista_final = []
-            # corrige as colunas das tabelas
-            for i, tabela in enumerate(df_lista):
-                df_temp = tabela.copy() # Obtém o DataFrame da tabela atual
+            
+            # Obtemos o código uma única vez para anexar a todos os itens
+            catmat = buscar_codigo(caminho_arquivo, "Quantidade", "-")
 
-                if df_temp.shape[1] == 8:
-                    # Tabela da Página 1 
-                    df_temp.columns = ['N°', 'Inciso', 'Nome', 'Quantidade', 'Unidade', 'Preço unitário', 'Data', 'Compõe']
-                    
-                    df_temp[['Quantidade', 'Unidade']] = df_temp['Quantidade'].str.extract(r'(\d+)\s*(.*)') # inutil, tava viajando demais
-                    df_temp = df_temp[['Preço unitário', 'Data']].copy()
-                    
-                    for coluna in df_temp.columns:
-                        df_temp[coluna] = df_temp[coluna].replace(r'^\s*$', np.nan, regex=True)
-                    
-                    df_temp.dropna(inplace=True)
-                    catmat = buscar_codigo(caminho_arquivo, "Quantidade", "-")
-                    df_temp["efisco"] = catmat
-                    df_lista_final.append(df_temp)
-                    
-                elif df_temp.shape[1] == 7:
-                    # Tabela da Página 2 em diante (onde Quantidade e Unidade se juntaram)
-                    print(f"   -> Reestruturando Tabela {i} (Colunas agrupadas)...")
-                    
-                    # 1. Definir os nomes das colunas atuais (7 colunas)
-                    df_temp.columns = ['N°', 'Inciso', 'Nome', 'Quant_Unid_Agrupada', 'Preço unitário', 'Data', 'Compõe']
-                    
-                    # 2. Aplicar o SPLIT e extrair os dados
-             
-                    df_temp[['Quantidade', 'Unidade']] = df_temp['Quant_Unid_Agrupada'].str.extract(r'(\d+)\s*(.*)') # inutil, tava viajando demais
-                    
-                    # 3. Reordenar e Renomear para o formato de 8 colunas (igual ao da Tabela 1)
-                    
-                    # Remove a coluna agrupada original
-                    df_temp.drop(columns=['Quant_Unid_Agrupada'], inplace=True)
-                    
-                    df_temp = df_temp[['Preço unitário', 'Data']].copy()
-                    
-                    for coluna in df_temp.columns:
-                        df_temp[coluna] = df_temp[coluna].replace(r'^\s*$', np.nan, regex=True)
-                    
-                    df_temp.dropna(inplace=True)
-                    catmat = buscar_codigo(caminho_arquivo, "Quantidade", "-")
-                    df_temp["efisco"] = catmat
-                    # Adiciona o DataFrame reestruturado
-                    df_lista_final.append(df_temp)
-                    
+            for tabela in df_lista:
+                df_temp = tabela.copy()
+                cols_count = df_temp.shape[1]
+
+                # Independente se tem 7 ou 8 colunas, o Preço e a Data 
+                # costumam ser as penúltimas colunas (excluindo a coluna 'Compõe')
+                if cols_count == 8:
+                    # Estrutura: [N, Inciso, Nome, Qtd, Unid, PREÇO, DATA, Compõe]
+                    df_temp = df_temp.iloc[:, [5, 6]].copy()
+                elif cols_count == 7:
+                    # Estrutura: [N, Inciso, Nome, Qtd+Unid, PREÇO, DATA, Compõe]
+                    df_temp = df_temp.iloc[:, [4, 5]].copy()
                 else:
-                    print(f"   -> Ignorando Tabela {i} ({df_temp.shape[1]} colunas), estrutura não mapeada.")
+                    continue
 
-            if not df_lista:
-                 raise ValueError("Nenhuma tabela de cotação principal encontrada.")
+                df_temp.columns = ['valor_raw', 'data_base_raw']
+                
+                # Limpa strings vazias e remove linhas nulas
+                df_temp = df_temp.replace(r'^\s*$', np.nan, regex=True)
+                df_temp.dropna(inplace=True)
+                
+                # Adiciona o código efisco e armazena
+                df_temp["efisco"] = catmat
+                df_lista_final.append(df_temp)
 
-        
+            if not df_lista_final:
+                return []
+
             df = pd.concat(df_lista_final, ignore_index=True)
             
-            # --- FASE 3: Mapeamento e Processamento ---
-        
-            df.rename(columns={
-                'Preço unitário': 'valor_raw', # Coluna 6
-                'Data': 'data_base_raw'      # Coluna 7
-            }, inplace=True)
-            
-            
-            # 4. Processamento de Dados (Convertendo e Limpando)
+            # --- FASE 4: Processamento de Dados (Conversão Final) ---
             lista_itens = []
-            codigo_item = buscar_codigo(caminho_arquivo, "Quantidade", "-") 
-            # Limpeza de strings e conversão para float/date
-            for index, row in df.iterrows():
+            for _, row in df.iterrows():
                 try:
-                    # Tenta extrair a data e valor
+                    # Limpeza e conversão de valor
                     valor_str = str(row['valor_raw']).replace('R$', '').replace('.', '').replace(',', '.').strip()
                     valor = float(valor_str)
                     
-                    # Converte a data para objeto date
+                    # Conversão de data
                     data_objeto = datetime.strptime(str(row['data_base_raw']).strip(), '%d/%m/%Y').date()
                     
                     lista_itens.append({
-                        'efisco': codigo_item,
+                        'efisco': row['efisco'],
                         'valor': valor,
                         'data_base': data_objeto
                     })
-                except Exception as e:
-                    pass 
+                except Exception:
+                    continue 
+
             return lista_itens
             
         except ValueError as ve:
@@ -236,7 +212,7 @@ def ler_dados(caminho_arquivo_input:str, fonte = "Compras.gov"):
             return []
     
     else:
-        print(f"ERRO CRÍTICO: Não encontrei nenhum arquivo .xlsx na pasta '{PASTA_ENTRADA}'.")
+        print(f"ERRO CRÍTICO: Não encontrei nenhum arquivo na pasta '{PASTA_ENTRADA}'.")
         return []
     
     nome_arquivo_usado = os.path.basename(caminho_arquivo)
@@ -297,6 +273,10 @@ def ler_dados(caminho_arquivo_input:str, fonte = "Compras.gov"):
         return []
 
 def verificar_necessidade_atualizacao(dados, periodo= 60):
+    """
+    Verifica quais itens precisam de atualização com base no período fornecido (em dias).
+    Retorna duas listas: itens_para_atualizar e todos os dados com status atualizado.
+    """
     data_hoje = datetime.now().date()
     limite_dias = timedelta(days=periodo) 
     itens_para_atualizar = []
@@ -315,6 +295,10 @@ def verificar_necessidade_atualizacao(dados, periodo= 60):
     return itens_para_atualizar, dados
 
 def gerar_pdf_cdp(driver, efisco, data_base, pasta_destino, item_id):
+    """
+    Gera o PDF de atualização de preço via Chrome DevTools Protocol (CDP) e adiciona um rodapé com informações.
+    
+    """
     try:
         params = {
             'landscape': False,
@@ -370,6 +354,10 @@ def gerar_pdf_cdp(driver, efisco, data_base, pasta_destino, item_id):
         return False
 
 def corrigir_valor_ipca_selenium(item, item_id, mostrar_browser=True):
+    """
+    Usa Selenium para acessar a calculadora do BCB e corrigir o valor pelo IPCA.
+    Gera o PDF do resultado e salva na pasta de downloads.
+    """
     service = Service(ChromeDriverManager().install())
     
     opcoes = Options()
@@ -385,7 +373,7 @@ def corrigir_valor_ipca_selenium(item, item_id, mostrar_browser=True):
     
     valor_a_enviar = f"{item['valor']:.2f}".replace('.', ',')
     
-    print(f"Processando codigo {item['efisco']}...")
+    print(f"Processando código {item['efisco']}...")
 
     tentativas = 0
     max_tentativas = 2
@@ -501,6 +489,9 @@ def concatena_pdf(catmat: str, todos_dados: list):
 
 
 def renomeia_detalhado_catmat(caminho):
+    """
+    Renomeia os PDFs na pasta 'relatorio_detalhado' com base no código CATMAT extraído do próprio PDF.
+    Usado para o relatório detalhado baixado do Compras.gov.br"""
     for arq in os.listdir(caminho):
         catmat = buscar_codigo(os.path.join(caminho, arq))
         if arq.startswith(f"{catmat}"):
@@ -509,11 +500,11 @@ def renomeia_detalhado_catmat(caminho):
         os.rename(os.path.join(caminho, arq), os.path.join(caminho, novo_nome))
 
 
-# AQUI O ERRO
 def renomeia_fonte_precos(caminho):
     """
     Renomeia os PDFs na pasta 'relatorio_detalhado' com base no nome do item 
     extraído do CSV correspondente na 'PASTA_ENTRADA'.
+    Usado para o relatório baixado do Fonte de Preços.
     """
     # Lista arquivos CSV para achar o nome do item
     csvs = glob.glob(os.path.join(PASTA_ENTRADA, "*.csv"))
@@ -532,6 +523,10 @@ def renomeia_fonte_precos(caminho):
                 print(f"Renomeado base detalhado para: {nome_item}.pdf")
 
 def fonte_csv(caminho_arquivo):
+    """
+    Lê o CSV exportado do Fonte de Preços e retorna uma lista de dicionários
+    com as chaves: 'efisco', 'valor', 'data_base'.
+    """
     df = pd.read_csv(caminho_arquivo, header=None)
 
     nome_item = df.iat[1,3]
@@ -576,6 +571,10 @@ def fonte_csv(caminho_arquivo):
     return lista_itens
 
 def compras_csv(caminho_arquivo):
+    """
+    Lê o CSV exportado do Compras.gov.br e retorna uma lista de dicionários
+    com as chaves: 'efisco', 'valor', 'data_base'.
+    """
     csv = pd.read_csv(caminho_arquivo, encoding='latin1', sep=';',skiprows=2, usecols=['Código do Item', 'Preço Unitário', 'Data/Hora da Compra'])
     csv.rename(columns={
         'Código do Item': 'efisco',

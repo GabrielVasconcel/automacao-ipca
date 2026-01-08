@@ -1,15 +1,10 @@
 import gradio as gr
 import os
 import shutil
-from datetime import datetime
-import glob
 import sys
-import time
 import gradio as gr 
-import PyPDF2
-from PyPDF2 import PdfReader
-import re
 import ctypes
+import pandas as pd
 # --- CORREÇÃO PARA O ERRO UVICORN/PYINSTALLER ---
 if sys.stdout is None:
     class NullWriter:
@@ -54,6 +49,7 @@ os.makedirs(PASTA_ENTRADA, exist_ok=True)
 os.makedirs(PASTA_DOWNLOAD, exist_ok=True)
 os.makedirs(PASTA_OUTPUT, exist_ok=True)
 os.makedirs(PASTA_DETALHADO, exist_ok=True)
+TEMPLATE_PATH = "template_ipca.xlsx"
 
 
 # --- Funções de Wrapper para a Interface Gradio ---
@@ -66,7 +62,6 @@ def interromper_execucao():
 
 def limpar_pastas_temp():
     """Limpa as pastas de entrada e download antes de cada execução."""
-    # NÃO use shutil.rmtree no BASE_DIR, apenas nas subpastas!
     for pasta in [PASTA_ENTRADA, PASTA_DOWNLOAD, PASTA_DETALHADO]:
         for arquivo in os.listdir(pasta):
             os.remove(os.path.join(pasta, arquivo))
@@ -99,7 +94,7 @@ def executar_automacao(arquivo_principal, lista_pdfs_base, mostrar_browser=True,
     yield "Arquivos de entrada copiados. Lendo dados do arquivo principal...", None
     
     # Se a extração automática estiver habilitada, renomeia os PDFs detalhados
-    # Para permitir o usuário renomear manualmente (atualmente principalmente para casos de não usar o compras, i.e., usar o fonte de preços)
+    # Para permitir o usuário renomear manualmente se necessário
     if auto_extrair_catmat and fonte == "Compras.gov":
         renomeia_detalhado_catmat(PASTA_DETALHADO)
     
@@ -110,7 +105,7 @@ def executar_automacao(arquivo_principal, lista_pdfs_base, mostrar_browser=True,
     efiscos_com_pdf_base = set()
     for arq_renomeado in os.listdir(PASTA_DETALHADO):
         if arq_renomeado.lower().endswith('.pdf'):
-            # Coleta o código renomeado (Ex: '123456')
+            # Coleta o código renomeado
             efiscos_com_pdf_base.add(arq_renomeado.replace('.pdf', ''))
     # 2. Ler Dados e Obter Estrutura (Dados a serem corrigidos)
     
@@ -175,13 +170,12 @@ def executar_automacao(arquivo_principal, lista_pdfs_base, mostrar_browser=True,
         yield "Concluído, mas nenhum arquivo PDF final foi gerado.", None
         return  None
 
-TEMPLATE_PATH = "template_ipca.xlsx"
 
-# Função para garantir que o arquivo existe (exemplo de criação rápida)
 def criar_template_se_nao_existir():
+    """
+    Garante que o arquivo de template Excel exista. Se não existir, cria um exemplo simples.
+    """
     if not os.path.exists(TEMPLATE_PATH):
-        # Aqui você poderia usar pandas para criar um excel básico se quiser
-        import pandas as pd
         df = pd.DataFrame(data={"catmat":["123456"],"valor": ["10,12"],"data": ["dd/mm/yyyy"]},columns=["catmat", "valor", "data"])
         df.to_excel(TEMPLATE_PATH, index=False)
     return TEMPLATE_PATH
@@ -246,7 +240,7 @@ with gr.Blocks(title="Automação de Correção de IPCA") as demo:
         # Botão estilizado para parecer um botão de perigo/parar
             btn_sair = gr.Button("❌ Fechar Programa Completamente", variant="stop")
             
-            # Texto invisível apenas para fins de evento 
+        # Texto invisível apenas para fins de evento 
         killer_output = gr.Textbox(visible=False)
 
         # Ação do botão
